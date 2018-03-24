@@ -37,26 +37,40 @@ enum MicroI {
     RequestMem(Reg),
 }
 
+enum NextAction {
+    Next,
+    MemRequest(u32),
+}
+
 impl M68K {
-    fn exec(&mut self, m: MicroI) -> bool {
+    fn exec(&mut self, m: MicroI) -> NextAction {
+        use NextAction::*;
         match m {
-            MicroI::Zero(r) => self.write_reg(r, 0),
-            MicroI::Set(r, x) => self.write_reg(r, x),
+            MicroI::Zero(r) => {
+                self.write_reg(r, 0);
+                Next
+            }
+            MicroI::Set(r, x) => {
+                self.write_reg(r, x);
+                Next
+            }
             MicroI::Mov(dst, src) => {
                 let x = self.read_reg(src);
                 self.write_reg(dst, x);
+                Next
             }
             MicroI::Add(r, x) => {
                 let x = self.read_reg(r) + self.read_reg(x);
                 self.write_reg(r, x);
+                Next
             }
             MicroI::Scale(r, s) => {
                 let x = self.read_reg(r) << s.shift();
                 self.write_reg(r, x);
+                Next
             }
-            MicroI::RequestMem(_addr) => return false,
+            MicroI::RequestMem(addr) => MemRequest(self.read_reg(addr)),
         }
-        true
     }
 
 
@@ -88,85 +102,126 @@ impl M68K {
         }
     }
 
+    fn add_instr(&mut self, mi: MicroI) {
+        self.instrs.push_back(mi);
+    }
+
     fn load_effaddr(&mut self, ea: EffAddr) {
         use Reg::*;
         use MicroI::*;
         match ea {
-            EffAddr::DataReg { r } => self.instrs.push_back(Mov(In0, D(r as usize))),
-            EffAddr::AddrReg { r } => self.instrs.push_back(Mov(In0, A(r as usize))),
+            EffAddr::DataReg { r } => self.add_instr(Mov(In0, D(r as usize))),
+            EffAddr::AddrReg { r } => self.add_instr(Mov(In0, A(r as usize))),
             EffAddr::Addr { r } => {
-                self.instrs.push_back(RequestMem(A(r as usize)));
-                self.instrs.push_back(Mov(In0, IOBuffer));
+                self.add_instr(RequestMem(A(r as usize)));
+                self.add_instr(Mov(In0, IOBuffer));
             }
             EffAddr::PostInc { r, s } => {
                 let a = A(r as usize);
-                self.instrs.push_back(RequestMem(a));
-                self.instrs.push_back(Mov(In0, IOBuffer));
-                self.instrs.push_back(Add(a, Immediate(s.value())));
+                self.add_instr(RequestMem(a));
+                self.add_instr(Mov(In0, IOBuffer));
+                self.add_instr(Add(a, Immediate(s.value())));
             }
             EffAddr::PreDec { r, s } => {
                 let a = A(r as usize);
-                self.instrs.push_back(Add(a, Immediate(-s.value())));
-                self.instrs.push_back(RequestMem(a));
-                self.instrs.push_back(Mov(In0, IOBuffer));
+                self.add_instr(Add(a, Immediate(-s.value())));
+                self.add_instr(RequestMem(a));
+                self.add_instr(Mov(In0, IOBuffer));
             }
             EffAddr::AddrDisp { r, d } => {
                 let a = A(r as usize);
-                self.instrs.push_back(Mov(In0, a));
-                self.instrs.push_back(Add(In0, Immediate(d as i32)));
-                self.instrs.push_back(RequestMem(In0));
-                self.instrs.push_back(Mov(In0, IOBuffer));
+                self.add_instr(Mov(In0, a));
+                self.add_instr(Add(In0, Immediate(d as i32)));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
             }
             EffAddr::AddrIdx { r, idx, d, s } => {
                 let a = A(r as usize);
-                self.instrs.push_back(Mov(In0, a));
-                self.instrs.push_back(Add(In0, Immediate(d)));
-                self.instrs.push_back(Mov(In1, idx));
-                self.instrs.push_back(Scale(In1, s));
-                self.instrs.push_back(Add(In0, In1));
-                self.instrs.push_back(RequestMem(In0));
-                self.instrs.push_back(Mov(In0, IOBuffer));
+                self.add_instr(Mov(In0, a));
+                self.add_instr(Add(In0, Immediate(d)));
+                self.add_instr(Mov(In1, idx));
+                self.add_instr(Scale(In1, s));
+                self.add_instr(Add(In0, In1));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
             }
             EffAddr::AddrIndPostIdx { r, d, idx, s, od } => {
                 let a = A(r as usize);
-                self.instrs.push_back(Mov(In0, a));
-                self.instrs.push_back(Add(In0, Immediate(d)));
-                self.instrs.push_back(RequestMem(In0));
-                self.instrs.push_back(Mov(In0, IOBuffer));
-                self.instrs.push_back(Mov(In1, idx));
-                self.instrs.push_back(Scale(In1, s));
-                self.instrs.push_back(Add(In0, In1));
-                self.instrs.push_back(Add(In0, Immediate(od)));
-                self.instrs.push_back(RequestMem(In0));
-                self.instrs.push_back(Mov(In0, IOBuffer));
+                self.add_instr(Mov(In0, a));
+                self.add_instr(Add(In0, Immediate(d)));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
+                self.add_instr(Mov(In1, idx));
+                self.add_instr(Scale(In1, s));
+                self.add_instr(Add(In0, In1));
+                self.add_instr(Add(In0, Immediate(od)));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
             }
             EffAddr::AddrIndPreIdx { r, d, idx, s, od } => {
                 let a = A(r as usize);
-                self.instrs.push_back(Mov(In0, a));
-                self.instrs.push_back(Add(In0, Immediate(d)));
-                self.instrs.push_back(Mov(In1, idx));
-                self.instrs.push_back(Scale(In1, s));
-                self.instrs.push_back(Add(In0, In1));
-                self.instrs.push_back(RequestMem(In0));
-                self.instrs.push_back(Mov(In0, IOBuffer));
-                self.instrs.push_back(Add(In0, Immediate(od)));
-                self.instrs.push_back(RequestMem(In0));
-                self.instrs.push_back(Mov(In0, IOBuffer));
+                self.add_instr(Mov(In0, a));
+                self.add_instr(Add(In0, Immediate(d)));
+                self.add_instr(Mov(In1, idx));
+                self.add_instr(Scale(In1, s));
+                self.add_instr(Add(In0, In1));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
+                self.add_instr(Add(In0, Immediate(od)));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
             }
-            EffAdddr::PCIndDisp { d } => {
-                self.instrs.push_back(Mov(In0, PC));
-                self.instrs.push_back(Add(In0, d));
-                self.instrs.push_back(RequestMem(In0));
-                self.instrs.push_back(Mov(In0, IOBuffer));
+            EffAddr::PCIndDisp { d } => {
+                self.add_instr(Mov(In0, PC));
+                self.add_instr(Add(In0, Immediate(d)));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
             }
             EffAddr::PCIndIdx { d, idx, s } => {
-                self.instrs.push_back(Mov(In0, PC));
-                self.instrs.push_back(Add(In0, d));
-                self.instrs.push_back(Mov(In1, idx));
-                self.instrs.push_back(Scale(In1, s));
-                self.instrs.push_back(Add(In0, In1));
-                self.instrs.push_back(RequestMem(In0));
-                self.instrs.push_back(Mov(In0, IOBuffer));
+                self.add_instr(Mov(In0, PC));
+                self.add_instr(Add(In0, Immediate(d)));
+                self.add_instr(Mov(In1, idx));
+                self.add_instr(Scale(In1, s));
+                self.add_instr(Add(In0, In1));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
+            }
+            EffAddr::PCIndPostIdx { d, idx, s, od } => {
+                self.add_instr(Mov(In0, PC));
+                self.add_instr(Add(In0, Immediate(d)));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
+                self.add_instr(Mov(In1, idx));
+                self.add_instr(Scale(In1, s));
+                self.add_instr(Add(In0, In1));
+                self.add_instr(Add(In0, Immediate(od)));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
+            }
+            EffAddr::PCIndPreIdx { d, idx, s, od } => {
+                self.add_instr(Mov(In0, PC));
+                self.add_instr(Add(In0, Immediate(d)));
+                self.add_instr(Mov(In1, idx));
+                self.add_instr(Scale(In1, s));
+                self.add_instr(Add(In0, In1));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
+                self.add_instr(Add(In0, Immediate(od)));
+                self.add_instr(RequestMem(In0));
+                self.add_instr(Mov(In0, IOBuffer));
+            }
+            EffAddr::AbsShort { addr } => {
+                self.add_instr(RequestMem(Immediate(addr as i32)));
+                self.add_instr(Mov(In0, IOBuffer));
+            }
+            EffAddr::AbsLong { hi, lo } => {
+                self.add_instr(RequestMem(
+                        Immediate(((hi as u32) << 16 | (lo as u32)) as i32)));
+                self.add_instr(Mov(In0, IOBuffer));
+            }
+            EffAddr::Immediate { addr } => {
+                self.add_instr(RequestMem(Immediate(addr as i32)));
+                self.add_instr(Mov(In0, IOBuffer));
             }
         }
     }
@@ -199,6 +254,11 @@ enum EffAddr {
     // 111
     PCIndDisp { d: i32 },
     PCIndIdx { d: i32, idx: Reg, s: Size },
+    PCIndPostIdx { d: i32, idx: Reg, s: Size, od: i32 },
+    PCIndPreIdx { d: i32, idx: Reg, s: Size, od: i32 },
+    AbsShort { addr: i16 },
+    AbsLong { hi: u16, lo: u16 },
+    Immediate { addr: u32 },
 }
 
 enum AddrMode {
@@ -257,4 +317,6 @@ fn decode(opcode: u16) -> AddrMode {
 fn main() {
     println!("{}", decode(4u16) as i16);
     println!("{}", decode(5u16) as i16);
+    println!("{}", (-1i16 as u32) as i32);
+    println!("{}", -1i16 as i32);
 }
